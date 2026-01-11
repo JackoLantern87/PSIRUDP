@@ -29,12 +29,29 @@ void canvas_set_cell(Canvas *c, int x, int y, char value) {
 }
 
 void canvas_print(Canvas *c) {
+    if (!c) return;
+
+    putchar('+');
+    for (int x = 0; x < c->width; x++)
+        putchar('-');
+    putchar('+');
+    putchar('\n');
+
     for (int y = 0; y < c->height; y++) {
+        putchar('|');
         for (int x = 0; x < c->width; x++)
             putchar(c->cells[y][x]);
+        putchar('|');
         putchar('\n');
     }
+
+    putchar('+');
+    for (int x = 0; x < c->width; x++)
+        putchar('-');
+    putchar('+');
+    putchar('\n');
 }
+
 
 void merge_2_canvases(Canvas* in, Canvas* out) {
     if (!in || !out)

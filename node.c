@@ -14,7 +14,7 @@
 #define CANVAS_W    60
 #define CANVAS_H    60
 
-/* ================= struktury żółwia ================= */
+/* ================= struktury ��wia ================= */
 
 typedef enum {
     UP, UR, RIGHT, DR, DOWN, DL, LEFT, UL
@@ -67,7 +67,6 @@ int main(void) {
     uint8_t buffer[2048];
     uint8_t node_id = 0;
 
-    /* ===== socket ===== */
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
         perror("socket");
@@ -91,7 +90,6 @@ int main(void) {
 
     printf("🔹 Node: wysłano MSG_REGISTER\n");
 
-    /* ===== loop ===== */
     while (1) {
         ssize_t len = recvfrom(sockfd, buffer, sizeof(buffer), 0,
                                (struct sockaddr *)&server_addr,
@@ -147,7 +145,7 @@ int main(void) {
             uint8_t *enc_buf = malloc(enc_size);
             canvas_encode(canvas, enc_buf);
 
-            /* ===== wysyłka ===== */
+            /* ===== wysy�anie ===== */
             uint8_t outbuf[2048];
 
             CanvasPayload payload;

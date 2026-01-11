@@ -35,7 +35,6 @@ static int current_part = 0;
 /* canvas globalny */
 static Canvas *global_canvas;
 
-/* żółw */
 static int turtle_x;
 static int turtle_y;
 static uint8_t turtle_dir;
@@ -69,31 +68,73 @@ static NodeEntry *next_node(void) {
     return NULL;
 }
 
-/* bezpieczny podział słowa */
-static int split_word(const char *word) {
-    if (registered_nodes <= 0)
+static int split_word(const char *word)
+{
+    if (registered_nodes <= 0 || !word)
         return 0;
 
-    int len = strlen(word);
-    int base = len / registered_nodes;
-    int offset = 0;
+    int word_len = strlen(word);
+    int avg_len = word_len / registered_nodes;
 
-    for (int i = 0; i < registered_nodes; i++) {
-        int n = (i == registered_nodes - 1)
-                ? len - offset
-                : base;
+    int current_part_idx = 0;
+    int current_len = 0;
 
-        if (n >= MAX_WORD_FRAGMENT)
-            n = MAX_WORD_FRAGMENT - 1;
+    const char *remaining_word = word;
+    int remaining_len = word_len;
 
-        memcpy(word_parts[i], word + offset, n);
-        word_parts[i][n] = '\0';
-        offset += n;
+    while (current_part_idx < registered_nodes - 1 && remaining_len > 0) {
+        int opening = 0, closing = 0;
+        int cut_pos = -1;
+
+        for (int i = 0; i < remaining_len; i++) {
+            if (remaining_word[i] == '[') opening++;
+            else if (remaining_word[i] == ']') closing++;
+
+            if (closing >= opening) {
+                cut_pos = i + 1;
+                break;
+            }
+        }
+
+        if (cut_pos <= 0)
+            break;
+
+        int new_len = current_len + cut_pos;
+
+        /* decyzja: dok�adamy fragment czy przechodzimy do nast�pnego kawa�ka */
+        if (abs(avg_len - current_len) >
+            abs(avg_len - new_len) &&
+            new_len < MAX_WORD_FRAGMENT - 1) {
+
+            memcpy(word_parts[current_part_idx] + current_len,
+                   remaining_word,
+                   cut_pos);
+
+            current_len += cut_pos;
+            word_parts[current_part_idx][current_len] = '\0';
+
+            remaining_word += cut_pos;
+            remaining_len -= cut_pos;
+        } else {
+            current_part_idx++;
+            current_len = 0;
+        }
     }
-    return registered_nodes;
+
+    /* ostatni kawa�ek dostaje reszt� */
+    if (current_part_idx < registered_nodes &&
+        remaining_len < MAX_WORD_FRAGMENT) {
+
+        memcpy(word_parts[current_part_idx], remaining_word, remaining_len);
+        word_parts[current_part_idx][remaining_len] = '\0';
+        current_part_idx++;
+    }
+
+    return current_part_idx;
 }
 
-/* ================= wysyłanie ================= */
+
+
 
 static void send_task(int sockfd, NodeEntry *node, const char *word) {
     if (!node || !word)
@@ -155,17 +196,15 @@ int main(void) {
 
     printf("🟢 Server UDP start\n");
 
-    /* ===== L-system ===== */
     L_system lsys;
-    printf("Server rozwala sie po tym\n");
-    lsystem_init(&lsys, "FX");
+    lsystem_init(&lsys, "AFX");
     lsystem_add_rule(&lsys, 'F', "FFFF[+FFFF][++FFFF][+++FFFF]");
     lsystem_add_rule(&lsys, 'X', "++X");
+    lsystem_add_rule(&lsys, 'A', "A-");
     lsystem_generate(&lsys, 2, full_word);
 
     printf("🌱 L-system (%lu znaków)\n", strlen(full_word));
 
-    /* ===== canvas ===== */
     global_canvas = canvas_create(CANVAS_W, CANVAS_H);
     canvas_clear(global_canvas);
 
@@ -259,7 +298,7 @@ int main(void) {
                     send_task(sockfd, n,
                               word_parts[current_part]);
             } else {
-                printf("\n🏁 FINALNY RYSUNEK:\n\n");
+                printf("FINALNY RYSUNEK:\n\n");
                 canvas_print(global_canvas);
                 break;
             }

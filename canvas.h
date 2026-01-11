@@ -17,4 +17,4 @@ void canvas_destroy(Canvas *c);
 int canvas_encoded_size(const Canvas *c);
 int canvas_encode(const Canvas *c, uint8_t *buffer);
 Canvas* canvas_decode(const uint8_t *buffer, int size);
-#endif //L_SYSTEM_SAMODZIELNIE_CANVAS_H
+#endif

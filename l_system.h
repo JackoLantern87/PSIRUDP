@@ -10,7 +10,7 @@ typedef struct {
 
 typedef struct {
     Rule rules[MAX_RULES];
-    char axiom[MAX_WORD];    // <--- NAPRAWIONE
+    char axiom[MAX_WORD];
     int rule_count;
 } L_system;
 
