@@ -36,17 +36,23 @@ void canvas_print(Canvas *c) {
     }
 }
 
-void merge_2_canvases(Canvas* canvas_in, Canvas* canvas_out){
-    int height = canvas_out->height;
-    int width = canvas_out->width;
-    for (int y = 0; y < height; y++){
-        for (int x = 0; x < width; x++){
-            char c = canvas_in->cells[y][x];
-            if(c != ' ')
-                canvas_set_cell(canvas_out, x, y, c);
+void merge_2_canvases(Canvas* in, Canvas* out) {
+    if (!in || !out)
+        return;
+
+    if (in->width != out->width ||
+        in->height != out->height)
+        return;
+
+    for (int y = 0; y < out->height; y++) {
+        for (int x = 0; x < out->width; x++) {
+            char c = in->cells[y][x];
+            if (c != ' ')
+                canvas_set_cell(out, x, y, c);
         }
     }
 }
+
 
 void canvas_destroy(Canvas *c) {
     for (int y = 0; y < c->height; y++)

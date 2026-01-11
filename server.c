@@ -35,7 +35,7 @@ static int current_part = 0;
 /* canvas globalny */
 static Canvas *global_canvas;
 
-/* aktualny stan żółwia */
+/* żółw */
 static int turtle_x;
 static int turtle_y;
 static uint8_t turtle_dir;
@@ -69,8 +69,11 @@ static NodeEntry *next_node(void) {
     return NULL;
 }
 
-/* prosty podział słowa */
+/* bezpieczny podział słowa */
 static int split_word(const char *word) {
+    if (registered_nodes <= 0)
+        return 0;
+
     int len = strlen(word);
     int base = len / registered_nodes;
     int offset = 0;
@@ -79,6 +82,10 @@ static int split_word(const char *word) {
         int n = (i == registered_nodes - 1)
                 ? len - offset
                 : base;
+
+        if (n >= MAX_WORD_FRAGMENT)
+            n = MAX_WORD_FRAGMENT - 1;
+
         memcpy(word_parts[i], word + offset, n);
         word_parts[i][n] = '\0';
         offset += n;
@@ -88,11 +95,10 @@ static int split_word(const char *word) {
 
 /* ================= wysyłanie ================= */
 
-static void send_task(
-    int sockfd,
-    NodeEntry *node,
-    const char *word
-) {
+static void send_task(int sockfd, NodeEntry *node, const char *word) {
+    if (!node || !word)
+        return;
+
     uint8_t buffer[2048];
 
     TaskPayload task;
@@ -133,7 +139,6 @@ int main(void) {
 
     memset(nodes, 0, sizeof(nodes));
 
-    /* ===== socket ===== */
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
         perror("socket");
@@ -152,13 +157,13 @@ int main(void) {
 
     /* ===== L-system ===== */
     L_system lsys;
+    printf("Server rozwala sie po tym\n");
     lsystem_init(&lsys, "FX");
     lsystem_add_rule(&lsys, 'F', "FFFF[+FFFF][++FFFF][+++FFFF]");
     lsystem_add_rule(&lsys, 'X', "++X");
     lsystem_generate(&lsys, 2, full_word);
 
-    printf("🌱 L-system wygenerowany (%lu znaków)\n",
-           strlen(full_word));
+    printf("🌱 L-system (%lu znaków)\n", strlen(full_word));
 
     /* ===== canvas ===== */
     global_canvas = canvas_create(CANVAS_W, CANVAS_H);
@@ -168,7 +173,6 @@ int main(void) {
     turtle_y = CANVAS_H / 2;
     turtle_dir = 0;
 
-    /* ===== loop ===== */
     while (1) {
         ssize_t len = recvfrom(sockfd, buffer, sizeof(buffer), 0,
                                (struct sockaddr *)&client_addr,
@@ -185,10 +189,14 @@ int main(void) {
             int idx = find_node(&client_addr);
             if (idx < 0) {
                 idx = find_free_slot();
+                if (idx < 0)
+                    continue;
+
                 nodes[idx].active = 1;
                 nodes[idx].addr = client_addr;
                 nodes[idx].node_id = idx + 1;
                 registered_nodes++;
+
                 printf("✔ Node %d registered\n",
                        nodes[idx].node_id);
             }
@@ -205,15 +213,21 @@ int main(void) {
                    addrlen);
 
             if (registered_nodes == MAX_NODES) {
-                split_word(full_word);
+                parts_count = split_word(full_word);
+                current_part = 0;
+
                 NodeEntry *n = next_node();
-                send_task(sockfd, n, word_parts[0]);
+                if (n)
+                    send_task(sockfd, n, word_parts[0]);
             }
         }
 
         /* ===== TASK DONE ===== */
         if (hdr->msg_type == MSG_TASK_DONE &&
             hdr->p_type == PAYLOAD_CANVAS) {
+
+            if (len < sizeof(ProtocolHeader) + sizeof(CanvasPayload))
+                continue;
 
             CanvasPayload *pl =
                 (CanvasPayload *)(buffer + sizeof(ProtocolHeader));
@@ -225,6 +239,9 @@ int main(void) {
 
             Canvas *tmp =
                 canvas_decode(canvas_data, canvas_len);
+
+            if (!tmp)
+                continue;
 
             merge_2_canvases(tmp, global_canvas);
 
@@ -238,8 +255,9 @@ int main(void) {
 
             if (current_part < parts_count) {
                 NodeEntry *n = next_node();
-                send_task(sockfd, n,
-                          word_parts[current_part]);
+                if (n)
+                    send_task(sockfd, n,
+                              word_parts[current_part]);
             } else {
                 printf("\n🏁 FINALNY RYSUNEK:\n\n");
                 canvas_print(global_canvas);

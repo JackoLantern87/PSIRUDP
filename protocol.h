@@ -10,7 +10,7 @@
 #define PROTOCOL_VERSION 1
 
 #define SERVER_PORT 8080
-#define MAX_NODES 4
+#define MAX_NODES 2
 
 /* Bezpieczne rozmiary dla UDP */
 #define MAX_WORD_FRAGMENT   256
