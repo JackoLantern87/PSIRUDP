@@ -6,20 +6,68 @@
 #include <sys/socket.h>
 
 #include "protocol.h"
+#include "canvas.h"
 
-#define SERVER_IP   "192.168.56.101"   // IP serwera
-#define SERVER_PORT 8080
+/* ================= konfiguracja ================= */
+
+#define SERVER_IP   "192.168.56.101"
+#define CANVAS_W    60
+#define CANVAS_H    60
+
+/* ================= struktury żółwia ================= */
+
+typedef enum {
+    UP, UR, RIGHT, DR, DOWN, DL, LEFT, UL
+} Direction;
+
+typedef struct {
+    int x;
+    int y;
+    Direction dir;
+} TurtleState;
+
+/* ================= rysowanie ================= */
+
+static void draw_turtle(
+    Canvas *canvas,
+    const char *word,
+    TurtleState *state
+) {
+    int dx[8] = { 0, 1, 1, 1, 0,-1,-1,-1 };
+    int dy[8] = {-1,-1, 0, 1, 1, 1, 0,-1 };
+
+    for (int i = 0; word[i]; i++) {
+        switch (word[i]) {
+            case 'F':
+                state->x += dx[state->dir];
+                state->y += dy[state->dir];
+                canvas_set_cell(canvas, state->x, state->y, '#');
+                break;
+
+            case '+':
+                state->dir = (state->dir + 1) % 8;
+                break;
+
+            case '-':
+                state->dir = (state->dir + 7) % 8;
+                break;
+
+            default:
+                break;
+        }
+    }
+}
+
+/* ================= main ================= */
 
 int main(void) {
     int sockfd;
     struct sockaddr_in server_addr;
     socklen_t addrlen = sizeof(server_addr);
-    uint8_t buffer[1500];
+    uint8_t buffer[2048];
     uint8_t node_id = 0;
 
-    /* =========================================================
-     * Socket UDP
-     * ========================================================= */
+    /* ===== socket ===== */
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
         perror("socket");
@@ -31,25 +79,19 @@ int main(void) {
     server_addr.sin_port = htons(SERVER_PORT);
     inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
 
-    /* =========================================================
-     * Rejestracja w serwerze
-     * ========================================================= */
-    ProtocolHeader hdr = protocol_make_header(
-        MSG_REGISTER,
-        PAYLOAD_EMPTY,
-        0,
-        0
+    /* ===== register ===== */
+    ProtocolHeader reg = protocol_make_header(
+        MSG_REGISTER, PAYLOAD_EMPTY, 0, 0
     );
-    hdr.payload_len = htons(0);
+    reg.payload_len = htons(0);
 
-    sendto(sockfd, &hdr, sizeof(hdr), 0,
-           (struct sockaddr *)&server_addr, sizeof(server_addr));
+    sendto(sockfd, &reg, sizeof(reg), 0,
+           (struct sockaddr *)&server_addr,
+           sizeof(server_addr));
 
     printf("🔹 Node: wysłano MSG_REGISTER\n");
 
-    /* =========================================================
-     * Pętla główna
-     * ========================================================= */
+    /* ===== loop ===== */
     while (1) {
         ssize_t len = recvfrom(sockfd, buffer, sizeof(buffer), 0,
                                (struct sockaddr *)&server_addr,
@@ -57,83 +99,88 @@ int main(void) {
         if (len < (ssize_t)sizeof(ProtocolHeader))
             continue;
 
-        ProtocolHeader *recv_hdr = (ProtocolHeader *)buffer;
-
-        if (recv_hdr->version != PROTOCOL_VERSION)
+        ProtocolHeader *hdr = (ProtocolHeader *)buffer;
+        if (hdr->version != PROTOCOL_VERSION)
             continue;
 
-        /* =====================================================
-         * Potwierdzenie rejestracji
-         * ===================================================== */
-        if (recv_hdr->msg_type == MSG_REGISTER && node_id == 0) {
-            node_id = recv_hdr->node_id;
-            printf("✔ Node zarejestrowany, node_id=%d\n", node_id);
+        /* ===== REGISTER ACK ===== */
+        if (hdr->msg_type == MSG_REGISTER && node_id == 0) {
+            node_id = hdr->node_id;
+            printf("✔ Node zarejestrowany (id=%d)\n", node_id);
             continue;
         }
 
-        /* =====================================================
-         * Odbiór zadania
-         * ===================================================== */
-        if (recv_hdr->msg_type == MSG_ASSIGN_TASK) {
-            uint16_t payload_len = ntohs(recv_hdr->payload_len);
-
-            if (recv_hdr->p_type != PAYLOAD_TASK || payload_len == 0)
-                continue;
+        /* ===== ASSIGN TASK ===== */
+        if (hdr->msg_type == MSG_ASSIGN_TASK &&
+            hdr->p_type == PAYLOAD_TASK) {
 
             TaskPayload *task =
                 (TaskPayload *)(buffer + sizeof(ProtocolHeader));
 
-            char *word_buf =
-                (char *)(buffer + sizeof(ProtocolHeader) + sizeof(TaskPayload));
+            char *word =
+                (char *)(buffer + sizeof(ProtocolHeader)
+                         + sizeof(TaskPayload));
 
             uint16_t word_len = ntohs(task->word_len);
 
-            if (word_len >= 255)
-                continue;
+            TurtleState turtle;
+            turtle.x   = ntohs(task->start_x);
+            turtle.y   = ntohs(task->start_y);
+            turtle.dir = task->direction;
 
-            char word[256];
-            memcpy(word, word_buf, word_len);
-            word[word_len] = '\0';
+            char fragment[MAX_WORD_FRAGMENT + 1];
+            memcpy(fragment, word, word_len);
+            fragment[word_len] = '\0';
 
-            printf("📥 Otrzymano słowo: \"%s\"\n", word);
+            printf("📥 Fragment: \"%s\"\n", fragment);
+            printf("➡ Start: (%d,%d) dir=%d\n",
+                   turtle.x, turtle.y, turtle.dir);
 
-            /* =================================================
-             * Modyfikacja słowa:
-             * każdy node dopisuje swoją literę
-             * ================================================= */
-            if (word_len < sizeof(word) - 1) {
-                char c = 'A' + node_id - 1;   // node 1 -> A, 2 -> B, ...
-                word[word_len] = c;
-                word[word_len + 1] = '\0';
-                word_len++;
-            }
+            /* ===== rysowanie ===== */
+            Canvas *canvas = canvas_create(CANVAS_W, CANVAS_H);
+            canvas_clear(canvas);
 
-            printf("🛠 Po modyfikacji: \"%s\"\n", word);
+            draw_turtle(canvas, fragment, &turtle);
 
-            /* =================================================
-             * Odesłanie MSG_TASK_DONE
-             * ================================================= */
-            uint8_t send_buf[1500];
+            /* ===== encode canvas ===== */
+            int enc_size = canvas_encoded_size(canvas);
+            uint8_t *enc_buf = malloc(enc_size);
+            canvas_encode(canvas, enc_buf);
+
+            /* ===== wysyłka ===== */
+            uint8_t outbuf[2048];
+
+            CanvasPayload payload;
+            payload.end_x = htons(turtle.x);
+            payload.end_y = htons(turtle.y);
+            payload.direction = turtle.dir;
+            payload.canvas_len = htons(enc_size);
 
             ProtocolHeader out_hdr = protocol_make_header(
                 MSG_TASK_DONE,
-                PAYLOAD_TASK,
+                PAYLOAD_CANVAS,
                 node_id,
-                word_len
+                sizeof(CanvasPayload) + enc_size
             );
-            out_hdr.payload_len = htons(word_len);
+            out_hdr.payload_len = htons(out_hdr.payload_len);
 
-            memcpy(send_buf, &out_hdr, sizeof(ProtocolHeader));
-            memcpy(send_buf + sizeof(ProtocolHeader), word, word_len);
+            memcpy(outbuf, &out_hdr, sizeof(out_hdr));
+            memcpy(outbuf + sizeof(out_hdr),
+                   &payload, sizeof(payload));
+            memcpy(outbuf + sizeof(out_hdr) + sizeof(payload),
+                   enc_buf, enc_size);
 
             sendto(sockfd,
-                   send_buf,
-                   sizeof(ProtocolHeader) + word_len,
+                   outbuf,
+                   sizeof(out_hdr) + sizeof(payload) + enc_size,
                    0,
                    (struct sockaddr *)&server_addr,
                    sizeof(server_addr));
 
-            printf("📤 Wysłano MSG_TASK_DONE: \"%s\"\n", word);
+            printf("📤 Wysłano canvas + stan końcowy\n");
+
+            free(enc_buf);
+            canvas_destroy(canvas);
         }
     }
 

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /* =========================================================
- *  Konfiguracja ogólna
+ *  Konfiguracja
  * ========================================================= */
 
 #define PROTOCOL_VERSION 1
@@ -12,19 +12,18 @@
 #define SERVER_PORT 8080
 #define MAX_NODES 4
 
-/* Maksymalne rozmiary danych (bezpieczne dla UDP) */
+/* Bezpieczne rozmiary dla UDP */
 #define MAX_WORD_FRAGMENT   256
-#define MAX_CANVAS_PAYLOAD  1024   /* canvas wysyłany w kawałkach */
+#define MAX_CANVAS_PAYLOAD  2048
 
 /* =========================================================
  *  Typy wiadomości
  * ========================================================= */
 
 typedef enum {
-    MSG_REGISTER = 1,      /* Node  -> Server : żądanie rejestracji */
-    MSG_ASSIGN_TASK,       /* Server-> Node   : przydział zadania */
-    MSG_CANVAS_DATA,       /* Node  -> Server : fragment canvasu */
-    MSG_TASK_DONE          /* Node  -> Server : koniec rysowania */
+    MSG_REGISTER = 1,      /* Node  -> Server */
+    MSG_ASSIGN_TASK,       /* Server-> Node  */
+    MSG_TASK_DONE          /* Node  -> Server */
 } MessageType;
 
 /* =========================================================
@@ -33,8 +32,8 @@ typedef enum {
 
 typedef enum {
     PAYLOAD_EMPTY = 0,
-    PAYLOAD_TASK,          /* stan żółwia + fragment słowa */
-    PAYLOAD_CANVAS         /* zakodowany fragment canvasu */
+    PAYLOAD_TASK,
+    PAYLOAD_CANVAS
 } PayloadType;
 
 /* =========================================================
@@ -42,37 +41,43 @@ typedef enum {
  * ========================================================= */
 
 typedef struct {
-    uint8_t  version;      /* wersja protokołu */
+    uint8_t  version;      /* PROTOCOL_VERSION */
     uint8_t  msg_type;     /* MessageType */
-    uint8_t  node_id;      /* ID węzła (nadane przez serwer) */
+    uint8_t  node_id;      /* ID węzła */
     uint8_t  p_type;       /* PayloadType */
-    uint16_t payload_len;  /* długość payloadu w bajtach */
+    uint16_t payload_len;  /* długość payloadu */
 } __attribute__((packed)) ProtocolHeader;
 
 /* =========================================================
- *  Payload: zadanie dla węzła
- * ========================================================= */
+ *  Payload: zadanie dla node
+ * =========================================================
+ *  Po strukturze idzie:
+ *      char word[word_len]
+ */
 
 typedef struct {
-    int16_t start_x;       /* pozycja startowa żółwia */
-    int16_t start_y;
-    uint8_t direction;    /* kierunek początkowy (0–7) */
-    uint16_t word_len;    /* długość fragmentu słowa */
-    /* po tej strukturze idą znaki słowa (char[word_len]) */
+    int16_t  start_x;
+    int16_t  start_y;
+    uint8_t  direction;    /* 0–7 */
+    uint16_t word_len;
 } __attribute__((packed)) TaskPayload;
 
 /* =========================================================
- *  Payload: dane canvasu
- * ========================================================= */
+ *  Payload: wynik rysowania (canvas)
+ * =========================================================
+ *  Po strukturze idzie:
+ *      uint8_t canvas_data[canvas_len]
+ */
 
 typedef struct {
-    uint16_t offset;      /* offset w obrazie (do składania) */
-    uint16_t data_len;    /* liczba bajtów danych */
-    /* po tej strukturze idą dane canvasu */
+    int16_t  end_x;
+    int16_t  end_y;
+    uint8_t  direction;
+    uint16_t canvas_len;
 } __attribute__((packed)) CanvasPayload;
 
 /* =========================================================
- *  Pomocnicze funkcje (opcjonalne, inline)
+ *  Helper
  * ========================================================= */
 
 static inline ProtocolHeader protocol_make_header(

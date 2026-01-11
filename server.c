@@ -6,14 +6,15 @@
 #include <sys/socket.h>
 
 #include "protocol.h"
+#include "canvas.h"
 #include "l_system.h"
 
-#define MAX_RESULT_LEN 4096
-#define REQUIRED_NODES 3   /* <<< ILE WĘZŁÓW CZEKA SERWER */
+/* ================= konfiguracja ================= */
 
-/* =========================================================
- *  Struktury
- * ========================================================= */
+#define CANVAS_W 60
+#define CANVAS_H 60
+
+/* ================= struktury ================= */
 
 typedef struct {
     uint8_t node_id;
@@ -23,23 +24,23 @@ typedef struct {
 
 static NodeEntry nodes[MAX_NODES];
 static int registered_nodes = 0;
+static int last_node = -1;
 
 /* L-system */
-static char full_word[MAX_RESULT_LEN];
+static char full_word[MAX_WORD];
 static char word_parts[MAX_NODES][MAX_WORD_FRAGMENT];
 static int parts_count = 0;
 static int current_part = 0;
 
-/* składanie wyniku */
-static char final_word[MAX_RESULT_LEN];
-static size_t final_len = 0;
+/* canvas globalny */
+static Canvas *global_canvas;
 
-/* round-robin */
-static int last_node_index = -1;
+/* aktualny stan żółwia */
+static int turtle_x;
+static int turtle_y;
+static uint8_t turtle_dir;
 
-/* =========================================================
- *  Pomocnicze
- * ========================================================= */
+/* ================= pomocnicze ================= */
 
 static int find_free_slot(void) {
     for (int i = 0; i < MAX_NODES; i++)
@@ -57,102 +58,80 @@ static int find_node(struct sockaddr_in *addr) {
     return -1;
 }
 
-static NodeEntry *get_next_node(void) {
+static NodeEntry *next_node(void) {
     for (int i = 1; i <= MAX_NODES; i++) {
-        int idx = (last_node_index + i) % MAX_NODES;
+        int idx = (last_node + i) % MAX_NODES;
         if (nodes[idx].active) {
-            last_node_index = idx;
+            last_node = idx;
             return &nodes[idx];
         }
     }
     return NULL;
 }
 
-/* =========================================================
- *  Dzielenie słowa
- * ========================================================= */
-
-static int split_word(
-    const char *word,
-    char parts[MAX_NODES][MAX_WORD_FRAGMENT],
-    int node_count
-) {
+/* prosty podział słowa */
+static int split_word(const char *word) {
     int len = strlen(word);
-    int base = len / node_count;
+    int base = len / registered_nodes;
     int offset = 0;
 
-    for (int i = 0; i < node_count; i++) {
-        int copy_len = (i == node_count - 1)
-                       ? len - offset
-                       : base;
-
-        strncpy(parts[i], word + offset, copy_len);
-        parts[i][copy_len] = '\0';
-        offset += copy_len;
+    for (int i = 0; i < registered_nodes; i++) {
+        int n = (i == registered_nodes - 1)
+                ? len - offset
+                : base;
+        memcpy(word_parts[i], word + offset, n);
+        word_parts[i][n] = '\0';
+        offset += n;
     }
-
-    return node_count;
+    return registered_nodes;
 }
 
-/* =========================================================
- *  Wysyłanie zadania
- * ========================================================= */
+/* ================= wysyłanie ================= */
 
-static void send_assign_task(
+static void send_task(
     int sockfd,
     NodeEntry *node,
     const char *word
 ) {
-    uint8_t buffer[1500];
+    uint8_t buffer[2048];
 
-    ProtocolHeader *hdr = (ProtocolHeader *)buffer;
-    TaskPayload *task =
-        (TaskPayload *)(buffer + sizeof(ProtocolHeader));
-    char *word_buf =
-        (char *)(buffer + sizeof(ProtocolHeader) + sizeof(TaskPayload));
+    TaskPayload task;
+    task.start_x = htons(turtle_x);
+    task.start_y = htons(turtle_y);
+    task.direction = turtle_dir;
+    task.word_len = htons(strlen(word));
 
-    uint16_t word_len = strlen(word);
-
-    *hdr = protocol_make_header(
+    ProtocolHeader hdr = protocol_make_header(
         MSG_ASSIGN_TASK,
         PAYLOAD_TASK,
         node->node_id,
-        sizeof(TaskPayload) + word_len
+        sizeof(TaskPayload) + strlen(word)
     );
-    hdr->payload_len = htons(hdr->payload_len);
+    hdr.payload_len = htons(hdr.payload_len);
 
-    task->start_x   = htons(0);
-    task->start_y   = htons(0);
-    task->direction = 0;
-    task->word_len  = htons(word_len);
+    memcpy(buffer, &hdr, sizeof(hdr));
+    memcpy(buffer + sizeof(hdr), &task, sizeof(task));
+    memcpy(buffer + sizeof(hdr) + sizeof(task),
+           word, strlen(word));
 
-    memcpy(word_buf, word, word_len);
-
-    size_t total_len =
-        sizeof(ProtocolHeader) +
-        sizeof(TaskPayload) +
-        word_len;
-
-    sendto(sockfd, buffer, total_len, 0,
+    sendto(sockfd, buffer,
+           sizeof(hdr) + sizeof(task) + strlen(word),
+           0,
            (struct sockaddr *)&node->addr,
            sizeof(node->addr));
 
-    printf("→ Wysłano fragment %d do node %d: \"%s\"\n",
-           current_part, node->node_id, word);
+    printf("➡ Wysłano fragment do node %d\n", node->node_id);
 }
 
-/* =========================================================
- *  MAIN
- * ========================================================= */
+/* ================= main ================= */
 
 int main(void) {
     int sockfd;
     struct sockaddr_in server_addr, client_addr;
-    socklen_t client_len = sizeof(client_addr);
-    uint8_t buffer[1500];
+    socklen_t addrlen = sizeof(client_addr);
+    uint8_t buffer[4096];
 
     memset(nodes, 0, sizeof(nodes));
-    memset(final_word, 0, sizeof(final_word));
 
     /* ===== socket ===== */
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -165,30 +144,35 @@ int main(void) {
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons(SERVER_PORT);
 
-    if (bind(sockfd, (struct sockaddr *)&server_addr,
-             sizeof(server_addr)) < 0) {
-        perror("bind");
-        close(sockfd);
-        exit(EXIT_FAILURE);
-    }
+    bind(sockfd,
+         (struct sockaddr *)&server_addr,
+         sizeof(server_addr));
 
-    printf("🟢 Serwer UDP działa na porcie %d\n", SERVER_PORT);
-    printf("⏳ Oczekiwanie na %d node’y...\n", REQUIRED_NODES);
+    printf("🟢 Server UDP start\n");
 
     /* ===== L-system ===== */
     L_system lsys;
     lsystem_init(&lsys, "FX");
     lsystem_add_rule(&lsys, 'F', "FFFF[+FFFF][++FFFF][+++FFFF]");
     lsystem_add_rule(&lsys, 'X', "++X");
-
     lsystem_generate(&lsys, 2, full_word);
-    printf("🌱 L-system word: %s\n", full_word);
+
+    printf("🌱 L-system wygenerowany (%lu znaków)\n",
+           strlen(full_word));
+
+    /* ===== canvas ===== */
+    global_canvas = canvas_create(CANVAS_W, CANVAS_H);
+    canvas_clear(global_canvas);
+
+    turtle_x = CANVAS_W / 2;
+    turtle_y = CANVAS_H / 2;
+    turtle_dir = 0;
 
     /* ===== loop ===== */
     while (1) {
         ssize_t len = recvfrom(sockfd, buffer, sizeof(buffer), 0,
                                (struct sockaddr *)&client_addr,
-                               &client_len);
+                               &addrlen);
         if (len < (ssize_t)sizeof(ProtocolHeader))
             continue;
 
@@ -201,18 +185,12 @@ int main(void) {
             int idx = find_node(&client_addr);
             if (idx < 0) {
                 idx = find_free_slot();
-                if (idx < 0)
-                    continue;
-
                 nodes[idx].active = 1;
                 nodes[idx].addr = client_addr;
                 nodes[idx].node_id = idx + 1;
                 registered_nodes++;
-
-                printf("✔ Zarejestrowano node %d (%d/%d)\n",
-                       nodes[idx].node_id,
-                       registered_nodes,
-                       REQUIRED_NODES);
+                printf("✔ Node %d registered\n",
+                       nodes[idx].node_id);
             }
 
             ProtocolHeader reply =
@@ -224,47 +202,53 @@ int main(void) {
 
             sendto(sockfd, &reply, sizeof(reply), 0,
                    (struct sockaddr *)&client_addr,
-                   client_len);
+                   addrlen);
 
-            /* START DOPIERO GDY JEST KOMPLET */
-            if (registered_nodes == REQUIRED_NODES && parts_count == 0) {
-                parts_count = split_word(
-                    full_word,
-                    word_parts,
-                    registered_nodes
-                );
-                current_part = 0;
-                NodeEntry *node = get_next_node();
-                send_assign_task(sockfd, node, word_parts[0]);
+            if (registered_nodes == MAX_NODES) {
+                split_word(full_word);
+                NodeEntry *n = next_node();
+                send_task(sockfd, n, word_parts[0]);
             }
         }
 
         /* ===== TASK DONE ===== */
-        else if (hdr->msg_type == MSG_TASK_DONE) {
-            uint16_t plen = ntohs(hdr->payload_len);
-            char *data = (char *)(buffer + sizeof(ProtocolHeader));
+        if (hdr->msg_type == MSG_TASK_DONE &&
+            hdr->p_type == PAYLOAD_CANVAS) {
 
-            memcpy(final_word + final_len, data, plen);
-            final_len += plen;
-            final_word[final_len] = '\0';
+            CanvasPayload *pl =
+                (CanvasPayload *)(buffer + sizeof(ProtocolHeader));
 
-            printf("✔ Node %d odesłał: \"%.*s\"\n",
-                   hdr->node_id, plen, data);
+            uint16_t canvas_len = ntohs(pl->canvas_len);
+            uint8_t *canvas_data =
+                buffer + sizeof(ProtocolHeader)
+                + sizeof(CanvasPayload);
+
+            Canvas *tmp =
+                canvas_decode(canvas_data, canvas_len);
+
+            merge_2_canvases(tmp, global_canvas);
+
+            turtle_x = ntohs(pl->end_x);
+            turtle_y = ntohs(pl->end_y);
+            turtle_dir = pl->direction;
+
+            canvas_destroy(tmp);
 
             current_part++;
 
             if (current_part < parts_count) {
-                NodeEntry *node = get_next_node();
-                send_assign_task(sockfd, node,
-                                 word_parts[current_part]);
+                NodeEntry *n = next_node();
+                send_task(sockfd, n,
+                          word_parts[current_part]);
             } else {
-                printf("🏁 Wszystkie fragmenty odebrane\n");
-                printf("✅ Finalne słowo: %s\n", final_word);
+                printf("\n🏁 FINALNY RYSUNEK:\n\n");
+                canvas_print(global_canvas);
                 break;
             }
         }
     }
 
+    canvas_destroy(global_canvas);
     close(sockfd);
     return 0;
 }
